@@ -8,12 +8,36 @@ from collections import Counter
 from collections import deque
 
 import cv2 as cv
+import onnxruntime
 import numpy as np
 import mediapipe as mp
 
 from utils import CvFpsCalc
 from model import KeyPointClassifier
 from model import PointHistoryClassifier
+
+
+def run_inference(onnx_session, input_size, image):
+    # Pre process:Resize, BGR->RGB, Transpose, float32 cast
+    input_image = cv.resize(image, dsize=(input_size[1], input_size[0]))
+    input_image = cv.cvtColor(input_image, cv.COLOR_BGR2RGB)
+    input_image = input_image.transpose(2, 0, 1)
+    input_image = np.expand_dims(input_image, axis=0)
+    input_image = input_image.astype('float32')
+    input_image = input_image / 255.0
+
+    # Inference
+    input_name = onnx_session.get_inputs()[0].name
+    output_name = onnx_session.get_outputs()[0].name
+    result = onnx_session.run([output_name], {input_name: input_image})
+
+    # Post process:squeeze, RGB->BGR, Transpose, uint8 cast
+    output_image = np.squeeze(result)
+    output_image = np.clip(output_image * 255.0, 0, 255)
+    output_image = output_image.astype(np.uint8)
+    output_image = cv.cvtColor(output_image, cv.COLOR_RGB2BGR)
+
+    return output_image
 
 
 def get_args():
@@ -51,7 +75,7 @@ def main():
     min_tracking_confidence = args.min_tracking_confidence
 
     use_brect = True
-
+    
     # カメラ準備 ###############################################################
     cap = cv.VideoCapture(cap_device)
     cap.set(cv.CAP_PROP_FRAME_WIDTH, cap_width)
@@ -98,6 +122,10 @@ def main():
     #  ########################################################################
     mode = 0
 
+    # model_path = "saved_model_480x640/model_float32.onnx"
+    model_path = "saved_model_240x320/model_float32.onnx"
+    onnx_session = onnxruntime.InferenceSession(model_path, execution_providers=["CUDAExecutionProvider"])
+    
     while True:
         fps = cvFpsCalc.get()
 
@@ -112,7 +140,21 @@ def main():
         if not ret:
             break
         image = cv.flip(image, 1)  # ミラー表示
+        frame_height, frame_width = image.shape[0], image.shape[1]
+
+        output_image = run_inference(
+            onnx_session,
+            [240, 320],
+            image,
+        )
+        output_image  = cv.resize(output_image,
+                                 dsize=(frame_width, frame_height))
+        cv.imshow("enhanced", output_image)
         debug_image = copy.deepcopy(image)
+
+        image = output_image
+
+        
 
         # 検出実施 #############################################################
         image = cv.cvtColor(image, cv.COLOR_BGR2RGB)
